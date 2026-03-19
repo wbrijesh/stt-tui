@@ -34,8 +34,43 @@ impl AudioManager {
         })
     }
 
+    pub fn device_name(&self) -> String {
+        self.device.name().unwrap_or_else(|_| "Unknown".to_string())
+    }
+
+    pub fn list_devices() -> Vec<String> {
+        let host = cpal::default_host();
+        let mut names = Vec::new();
+        if let Ok(devices) = host.input_devices() {
+            for d in devices {
+                names.push(d.name().unwrap_or_else(|_| "Unknown".to_string()));
+            }
+        }
+        names
+    }
+
+    pub fn set_device_by_index(&mut self, index: usize) -> Result<()> {
+        let host = cpal::default_host();
+        let devices: Vec<_> = host
+            .input_devices()
+            .context("Failed to enumerate devices")?
+            .collect();
+
+        let device = devices
+            .into_iter()
+            .nth(index)
+            .context("Device index out of range")?;
+
+        let config = device
+            .default_input_config()
+            .context("Failed to get input config for selected device")?;
+
+        self.device = device;
+        self.config = config;
+        Ok(())
+    }
+
     pub fn start_recording(&mut self) -> Result<()> {
-        // Clear buffer
         {
             let mut buf = self.buffer.lock().unwrap();
             buf.clear();
@@ -62,7 +97,6 @@ impl AudioManager {
                         let mut buf = buffer.lock().unwrap();
                         buf.extend_from_slice(data);
 
-                        // Send audio level ~10 times per second
                         let mut counter = level_counter.lock().unwrap();
                         *counter += data.len() as u32;
                         if *counter >= 1600 {
@@ -132,7 +166,6 @@ impl AudioManager {
         let source_rate = self.config.sample_rate().0;
         let source_channels = self.config.channels() as usize;
 
-        // Mix down to mono if stereo
         let mono: Vec<f32> = if source_channels > 1 {
             samples
                 .chunks(source_channels)
@@ -142,7 +175,6 @@ impl AudioManager {
             samples
         };
 
-        // Resample to 16kHz if needed
         let target_rate = 16000u32;
         let resampled = if source_rate != target_rate {
             resample(&mono, source_rate, target_rate)
@@ -150,7 +182,6 @@ impl AudioManager {
             mono
         };
 
-        // Encode as WAV
         let wav_bytes = encode_wav(&resampled, target_rate)?;
 
         self.event_tx
@@ -195,22 +226,19 @@ fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
 
     let mut buf: Vec<u8> = Vec::with_capacity(file_size as usize + 8);
 
-    // RIFF header
     buf.extend_from_slice(b"RIFF");
     buf.extend_from_slice(&file_size.to_le_bytes());
     buf.extend_from_slice(b"WAVE");
 
-    // fmt subchunk
     buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes()); // subchunk size
-    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM format
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
     buf.extend_from_slice(&num_channels.to_le_bytes());
     buf.extend_from_slice(&sample_rate.to_le_bytes());
     buf.extend_from_slice(&byte_rate.to_le_bytes());
     buf.extend_from_slice(&block_align.to_le_bytes());
     buf.extend_from_slice(&bits_per_sample.to_le_bytes());
 
-    // data subchunk
     buf.extend_from_slice(b"data");
     buf.extend_from_slice(&data_size.to_le_bytes());
 

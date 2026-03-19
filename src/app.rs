@@ -33,6 +33,10 @@ pub struct App {
     pub yank_ticks_remaining: u64,
     pub show_help: bool,
     pub show_stats: bool,
+    pub show_mic_picker: bool,
+    pub mic_devices: Vec<String>,
+    pub mic_selected: usize,
+    pub mic_current_name: String,
     pub usage_stats: Option<UsageStats>,
     pub should_quit: bool,
     pub api_key_input: String,
@@ -76,6 +80,11 @@ impl App {
             None => (Vec::new(), 0.0),
         };
 
+        let mic_current_name = match &audio_manager {
+            Some(m) => m.device_name(),
+            None => "None".to_string(),
+        };
+
         let current_index = if transcripts.is_empty() {
             0
         } else {
@@ -95,6 +104,10 @@ impl App {
             yank_ticks_remaining: 0,
             show_help: false,
             show_stats: false,
+            show_mic_picker: false,
+            mic_devices: Vec::new(),
+            mic_selected: 0,
+            mic_current_name,
             usage_stats: None,
             should_quit: false,
             api_key_input: String::new(),
@@ -200,6 +213,11 @@ impl App {
             return;
         }
 
+        if self.show_mic_picker {
+            self.handle_mic_picker_key(key);
+            return;
+        }
+
         if let AppState::Error(_) = &self.state {
             self.state = AppState::Idle;
             return;
@@ -215,6 +233,11 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('m') => {
+                if self.state == AppState::Idle {
+                    self.open_mic_picker();
+                }
             }
             KeyCode::Char('S') => {
                 if self.state == AppState::Idle {
@@ -348,6 +371,57 @@ impl App {
         }
         self.transcripts.clear();
         self.current_index = 0;
+    }
+
+    fn open_mic_picker(&mut self) {
+        let devices = AudioManager::list_devices();
+        if devices.is_empty() {
+            self.state = AppState::Error("No input devices found".to_string());
+            return;
+        }
+        // Find the currently active device in the list
+        let current_idx = devices
+            .iter()
+            .position(|name| name == &self.mic_current_name)
+            .unwrap_or(0);
+        self.mic_devices = devices;
+        self.mic_selected = current_idx;
+        self.show_mic_picker = true;
+    }
+
+    fn handle_mic_picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.mic_selected + 1 < self.mic_devices.len() {
+                    self.mic_selected += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mic_selected = self.mic_selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                self.select_mic(self.mic_selected);
+                self.show_mic_picker = false;
+            }
+            KeyCode::Esc | KeyCode::Char('m') => {
+                self.show_mic_picker = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn select_mic(&mut self, index: usize) {
+        if let Some(mgr) = &self.audio_manager {
+            let mut mgr = mgr.lock().unwrap();
+            match mgr.set_device_by_index(index) {
+                Ok(()) => {
+                    self.mic_current_name = mgr.device_name();
+                }
+                Err(e) => {
+                    self.state = AppState::Error(format!("Failed to set mic: {}", e));
+                }
+            }
+        }
     }
 
     fn cancel_recording(&mut self) {

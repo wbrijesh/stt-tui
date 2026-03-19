@@ -30,6 +30,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_stats {
         render_stats_modal(frame, app);
     }
+
+    if app.show_mic_picker {
+        render_mic_picker_modal(frame, app);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -448,6 +452,8 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
 
     if app.state != AppState::Recording {
         spans.extend(vec![
+            Span::styled("m", key_style),
+            Span::styled(" Mic  ", label_style),
             Span::styled("S", key_style),
             Span::styled(" Stats  ", label_style),
             Span::styled("q", key_style),
@@ -467,7 +473,7 @@ fn render_help_modal(frame: &mut Frame) {
 
     // Center a box ~60 wide, ~18 tall
     let modal_width = 60u16.min(area.width.saturating_sub(4));
-    let modal_height = 24u16.min(area.height.saturating_sub(4));
+    let modal_height = 25u16.min(area.height.saturating_sub(4));
 
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -542,6 +548,10 @@ fn render_help_modal(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("    D      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("Delete all transcripts", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("    m      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Select microphone", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
             Span::styled("    S      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
@@ -656,4 +666,74 @@ fn render_stats_modal(frame: &mut Frame, app: &App) {
         .style(Style::default().bg(Color::Rgb(15, 15, 15)));
 
     frame.render_widget(paragraph, modal_area);
+}
+
+fn render_mic_picker_modal(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let device_count = app.mic_devices.len();
+    let modal_height = (device_count as u16 + 6).min(area.height.saturating_sub(4));
+    let modal_width = 50u16.min(area.width.saturating_sub(4));
+
+    let vertical = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(modal_height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let horizontal = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(modal_width),
+        Constraint::Fill(1),
+    ])
+    .split(vertical[1]);
+
+    let modal_area = horizontal[1];
+    frame.render_widget(Clear, modal_area);
+
+    let block = Block::default()
+        .title(" Select Microphone ")
+        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(GREEN));
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (i, name) in app.mic_devices.iter().enumerate() {
+        let is_selected = i == app.mic_selected;
+        let is_active = name == &app.mic_current_name;
+
+        let marker = if is_active { "\u{25CF} " } else { "  " };
+        let prefix = if is_selected { " \u{25B6} " } else { "   " };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(GREEN)
+        } else {
+            Style::default().fg(DIM)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(marker, Style::default().fg(GREEN)),
+            Span::styled(name.clone(), style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k move  ENTER select  ESC close",
+        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+    )));
+
+    let mic_paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
+
+    frame.render_widget(mic_paragraph, modal_area);
 }

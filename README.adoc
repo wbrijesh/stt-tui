@@ -1,0 +1,56 @@
+= stt-tui
+
+Speech-to-text in your terminal.
+
+A native transcription tool without apple developer subscription for my personal use.
+
+== Install
+
+[source,bash]
+----
+brew tap wbrijesh/tools
+brew install stt-tui
+----
+
+Or from source:
+
+[source,bash]
+----
+git clone https://github.com/wbrijesh/stt-tui.git
+cd stt-tui
+cargo install --path .
+----
+
+== Setup
+
+On first launch, you'll be asked for your OpenAI API key. It gets saved to `~/.config/stt-tui/config.toml`.
+
+Alternatively, export `OPENAI_API_KEY` in your shell.
+
+== Keybindings
+
+[cols="1,3"]
+|===
+| `SPACE` | Start / stop recording
+| `ESC` | Cancel recording, or quit
+| `h` / `l` | Previous / next transcript
+| `y` | Yank to clipboard
+| `d` | Delete transcript
+| `D` | Delete all
+| `m` | Select microphone
+| `S` | Usage stats
+| `?` | Help
+| `q` | Quit
+|===
+
+== Files
+
+[cols="1,2"]
+|===
+| `~/.config/stt-tui/config.toml` | API key, model
+| `~/.config/stt-tui/stt-tui.db` | Transcript history, usage stats
+|===
+
+== Requirements
+
+macOS. Uses CoreAudio for recording and pbcopy for clipboard.

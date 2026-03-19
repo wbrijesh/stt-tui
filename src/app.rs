@@ -7,6 +7,7 @@ use crate::api::ApiClient;
 use crate::audio::AudioManager;
 use crate::config::Config;
 use crate::event::AppEvent;
+use crate::storage::{fetch_usage_stats, Database, Transcript, UsageStats};
 
 const YANK_FEEDBACK_TICKS: u64 = 20;
 
@@ -21,29 +22,36 @@ pub enum AppState {
 
 pub struct App {
     pub state: AppState,
-    pub transcriptions: Vec<String>,
+    pub transcripts: Vec<Transcript>,
     pub current_index: usize,
     pub current_partial: String,
     pub audio_level: f32,
+    pub level_history: Vec<f32>,
     pub recording_start: Option<std::time::Instant>,
     pub recording_duration_ms: u64,
     pub tick_count: u64,
     pub yank_ticks_remaining: u64,
     pub show_help: bool,
+    pub show_stats: bool,
+    pub usage_stats: Option<UsageStats>,
     pub should_quit: bool,
     pub api_key_input: String,
     pub setup_error: Option<String>,
+    pub total_cost_usd: f64,
 
     audio_manager: Option<Arc<Mutex<AudioManager>>>,
     api_client: Option<Arc<ApiClient>>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     model: String,
+    db: Option<Arc<Database>>,
+    pending_duration_ms: u64,
 }
 
 impl App {
     pub fn new(
         config: Option<Config>,
         audio_manager: Option<AudioManager>,
+        db: Option<Database>,
         event_tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Self {
         let (state, api_client, model) = match config {
@@ -59,24 +67,45 @@ impl App {
             ),
         };
 
+        let (transcripts, total_cost_usd) = match &db {
+            Some(db) => {
+                let t = db.active_transcripts().unwrap_or_default();
+                let c = db.total_cost().unwrap_or(0.0);
+                (t, c)
+            }
+            None => (Vec::new(), 0.0),
+        };
+
+        let current_index = if transcripts.is_empty() {
+            0
+        } else {
+            transcripts.len() - 1
+        };
+
         Self {
             state,
-            transcriptions: Vec::new(),
-            current_index: 0,
+            transcripts,
+            current_index,
             current_partial: String::new(),
             audio_level: 0.0,
+            level_history: Vec::new(),
             recording_start: None,
             recording_duration_ms: 0,
             tick_count: 0,
             yank_ticks_remaining: 0,
             show_help: false,
+            show_stats: false,
+            usage_stats: None,
             should_quit: false,
             api_key_input: String::new(),
             setup_error: None,
+            total_cost_usd,
             audio_manager: audio_manager.map(|m| Arc::new(Mutex::new(m))),
             api_client,
             event_tx,
             model,
+            db: db.map(Arc::new),
+            pending_duration_ms: 0,
         }
     }
 
@@ -85,8 +114,14 @@ impl App {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::AudioLevel(level) => {
                 self.audio_level = level;
+                self.level_history.push(level);
+                // Keep max 200 samples (~20 seconds at ~10Hz)
+                if self.level_history.len() > 200 {
+                    self.level_history.remove(0);
+                }
             }
             AppEvent::RecordingComplete(wav_bytes) => {
+                self.pending_duration_ms = self.recording_duration_ms;
                 self.state = AppState::Transcribing;
                 self.current_partial.clear();
                 self.audio_level = 0.0;
@@ -94,8 +129,9 @@ impl App {
                 if let Some(client) = &self.api_client {
                     let client = client.clone();
                     let tx = self.event_tx.clone();
+                    let dur = self.pending_duration_ms;
                     tokio::spawn(async move {
-                        if let Err(e) = client.transcribe(wav_bytes, tx.clone()).await {
+                        if let Err(e) = client.transcribe(wav_bytes, tx.clone(), dur).await {
                             let _ = tx.send(AppEvent::ApiError(e.to_string()));
                         }
                     });
@@ -104,10 +140,23 @@ impl App {
             AppEvent::TranscriptDelta(text) => {
                 self.current_partial = text;
             }
-            AppEvent::TranscriptComplete(text) => {
+            AppEvent::TranscriptComplete { text, duration_ms } => {
                 if !text.is_empty() {
-                    self.transcriptions.push(text);
-                    self.current_index = self.transcriptions.len() - 1;
+                    let transcript = Transcript::new(text, duration_ms);
+                    if let Some(db) = &self.db {
+                        match db.insert(&transcript) {
+                            Ok(_) => {
+                                self.total_cost_usd += transcript.cost_usd;
+                            }
+                            Err(e) => {
+                                let _ = self
+                                    .event_tx
+                                    .send(AppEvent::ApiError(format!("DB save error: {}", e)));
+                            }
+                        }
+                    }
+                    self.transcripts.push(transcript);
+                    self.current_index = self.transcripts.len() - 1;
                 }
                 self.current_partial.clear();
                 self.state = AppState::Idle;
@@ -146,16 +195,43 @@ impl App {
             return;
         }
 
+        if self.show_stats {
+            self.show_stats = false;
+            return;
+        }
+
         if let AppState::Error(_) = &self.state {
             self.state = AppState::Idle;
             return;
         }
 
         match key.code {
+            KeyCode::Esc => {
+                if self.state == AppState::Recording {
+                    self.cancel_recording();
+                } else if self.state == AppState::Idle {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('S') => {
+                if self.state == AppState::Idle {
+                    if let Some(db) = &self.db {
+                        match fetch_usage_stats(db) {
+                            Ok(stats) => {
+                                self.usage_stats = Some(stats);
+                                self.show_stats = true;
+                            }
+                            Err(e) => {
+                                self.state = AppState::Error(format!("Stats error: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('q') => {
                 if self.state == AppState::Idle {
                     self.should_quit = true;
                 }
@@ -164,25 +240,29 @@ impl App {
                 self.toggle_recording();
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                if self.state == AppState::Idle && !self.transcriptions.is_empty() {
+                if self.state == AppState::Idle && !self.transcripts.is_empty() {
                     self.current_index = self.current_index.saturating_sub(1);
                 }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                if self.state == AppState::Idle && !self.transcriptions.is_empty() {
+                if self.state == AppState::Idle && !self.transcripts.is_empty() {
                     self.current_index =
-                        (self.current_index + 1).min(self.transcriptions.len() - 1);
+                        (self.current_index + 1).min(self.transcripts.len() - 1);
                 }
             }
             KeyCode::Char('y') => {
-                if self.state == AppState::Idle && !self.transcriptions.is_empty() {
+                if self.state == AppState::Idle && !self.transcripts.is_empty() {
                     self.yank_current();
                 }
             }
-            KeyCode::Char('c') => {
-                if self.state == AppState::Idle {
-                    self.transcriptions.clear();
-                    self.current_index = 0;
+            KeyCode::Char('d') => {
+                if self.state == AppState::Idle && !self.transcripts.is_empty() {
+                    self.delete_current();
+                }
+            }
+            KeyCode::Char('D') => {
+                if self.state == AppState::Idle && !self.transcripts.is_empty() {
+                    self.delete_all();
                 }
             }
             _ => {}
@@ -229,8 +309,8 @@ impl App {
     }
 
     fn yank_current(&mut self) {
-        if let Some(text) = self.transcriptions.get(self.current_index) {
-            let content = text.clone();
+        if let Some(transcript) = self.transcripts.get(self.current_index) {
+            let content = transcript.text.clone();
             let result = std::process::Command::new("pbcopy")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
@@ -247,6 +327,37 @@ impl App {
                 }
             }
         }
+    }
+
+    fn delete_current(&mut self) {
+        let transcript = &self.transcripts[self.current_index];
+        if let Some(db) = &self.db {
+            let _ = db.soft_delete(transcript.id);
+        }
+        self.transcripts.remove(self.current_index);
+        if self.transcripts.is_empty() {
+            self.current_index = 0;
+        } else if self.current_index >= self.transcripts.len() {
+            self.current_index = self.transcripts.len() - 1;
+        }
+    }
+
+    fn delete_all(&mut self) {
+        if let Some(db) = &self.db {
+            let _ = db.soft_delete_all();
+        }
+        self.transcripts.clear();
+        self.current_index = 0;
+    }
+
+    fn cancel_recording(&mut self) {
+        if let Some(mgr) = &self.audio_manager {
+            let mut mgr = mgr.lock().unwrap();
+            mgr.cancel_recording();
+        }
+        self.state = AppState::Idle;
+        self.audio_level = 0.0;
+        self.recording_duration_ms = 0;
     }
 
     fn toggle_recording(&mut self) {
@@ -268,6 +379,7 @@ impl App {
                         self.recording_start = Some(std::time::Instant::now());
                         self.recording_duration_ms = 0;
                         self.audio_level = 0.0;
+                        self.level_history.clear();
                     }
                     Err(e) => {
                         self.state = AppState::Error(format!("Mic error: {}", e));

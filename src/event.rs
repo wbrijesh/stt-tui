@@ -8,7 +8,7 @@ pub enum AppEvent {
     AudioLevel(f32),
     RecordingComplete(Vec<u8>),
     TranscriptDelta(String),
-    TranscriptComplete(String),
+    TranscriptComplete { text: String, duration_ms: u64 },
     ApiError(String),
     Tick,
 }

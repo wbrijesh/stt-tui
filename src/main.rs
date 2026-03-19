@@ -3,6 +3,7 @@ mod app;
 mod audio;
 mod config;
 mod event;
+mod storage;
 mod ui;
 
 use anyhow::Result;
@@ -12,6 +13,7 @@ use app::App;
 use audio::AudioManager;
 use config::Config;
 use event::EventHandler;
+use storage::Database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,7 +25,6 @@ async fn main() -> Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    // Load config — None means first run, will show setup screen
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -32,13 +33,20 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Audio init — if it fails, app still launches but shows the error
     let audio_manager = match AudioManager::new(tx.clone()) {
         Ok(m) => Some(m),
         Err(_) => None,
     };
 
-    let mut app = App::new(config, audio_manager, tx.clone());
+    let db = match Database::open() {
+        Ok(db) => Some(db),
+        Err(e) => {
+            eprintln!("Warning: database error: {}", e);
+            None
+        }
+    };
+
+    let mut app = App::new(config, audio_manager, db, tx.clone());
 
     let event_handler = EventHandler::new(tx);
     let _event_handle = event_handler.start();

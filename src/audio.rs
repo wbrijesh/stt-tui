@@ -115,8 +115,13 @@ impl AudioManager {
         Ok(())
     }
 
+    pub fn cancel_recording(&mut self) {
+        self.stream = None;
+        let mut buf = self.buffer.lock().unwrap();
+        buf.clear();
+    }
+
     pub fn stop_recording(&mut self) -> Result<()> {
-        // Drop the stream to stop recording
         self.stream = None;
 
         let samples = {

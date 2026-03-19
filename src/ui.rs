@@ -9,34 +9,6 @@ use crate::app::{App, AppState};
 const GREEN: Color = Color::Rgb(0, 180, 80);
 const DIM: Color = Color::Rgb(80, 80, 80);
 
-const BRAILLE_SPINNER: &[&str] = &[
-    "\u{2801}", "\u{2803}", "\u{2807}", "\u{280F}", "\u{281F}", "\u{283F}", "\u{287F}", "\u{28FF}",
-    "\u{28FE}", "\u{28FC}", "\u{28F8}", "\u{28F0}", "\u{28E0}", "\u{28C0}", "\u{2880}", "\u{2800}",
-];
-
-const BRAILLE_WAVE: &[char] = &[
-    '\u{2800}', '\u{2880}', '\u{28A0}', '\u{28A4}', '\u{28B4}',
-    '\u{28F4}', '\u{28FC}', '\u{28FE}', '\u{28FF}',
-];
-
-const BRAILLE_DOTS: &[&str] = &[
-    "\u{2804}\u{2800}\u{2800}",
-    "\u{2844}\u{2800}\u{2800}",
-    "\u{28C4}\u{2800}\u{2800}",
-    "\u{28E4}\u{2800}\u{2800}",
-    "\u{28A4}\u{2804}\u{2800}",
-    "\u{2824}\u{2844}\u{2800}",
-    "\u{2800}\u{28C4}\u{2800}",
-    "\u{2800}\u{28E4}\u{2800}",
-    "\u{2800}\u{28A4}\u{2804}",
-    "\u{2800}\u{2824}\u{2844}",
-    "\u{2800}\u{2800}\u{28C4}",
-    "\u{2800}\u{2800}\u{28E4}",
-    "\u{2800}\u{2800}\u{28A4}",
-    "\u{2800}\u{2800}\u{2824}",
-    "\u{2800}\u{2800}\u{2800}",
-];
-
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -54,6 +26,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_help {
         render_help_modal(frame);
     }
+
+    if app.show_stats {
+        render_stats_modal(frame, app);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -64,30 +40,25 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         AppState::Setup => "SETUP ".to_string(),
         AppState::Recording => {
             let secs = app.recording_duration_ms / 1000;
-            let idx = (app.tick_count as usize) % BRAILLE_SPINNER.len();
             format!(
-                "{} REC {:02}:{:02} ",
-                BRAILLE_SPINNER[idx],
+                "REC {:02}:{:02} ",
                 secs / 60,
                 secs % 60
             )
         }
-        AppState::Transcribing => {
-            let idx = (app.tick_count as usize) % BRAILLE_DOTS.len();
-            format!("{} TRANSCRIBING ", BRAILLE_DOTS[idx])
-        }
+        AppState::Transcribing => "TRANSCRIBING ".to_string(),
         AppState::Error(_) => "ERROR ".to_string(),
         AppState::Idle => {
-            if app.transcriptions.is_empty() {
+            if app.transcripts.is_empty() {
                 "READY ".to_string()
             } else {
                 let has_prev = app.current_index > 0;
-                let has_next = app.current_index < app.transcriptions.len() - 1;
+                let has_next = app.current_index < app.transcripts.len() - 1;
                 format!(
                     "{} {}/{} {} ",
                     if has_prev { "\u{25C0}" } else { " " },
                     app.current_index + 1,
-                    app.transcriptions.len(),
+                    app.transcripts.len(),
                     if has_next { "\u{25B6}" } else { " " },
                 )
             }
@@ -241,43 +212,22 @@ fn render_recording_view(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let mid_y = inner.height / 2;
-    let wave_width = (inner.width as usize).min(60);
-    let tick = app.tick_count as f64;
-    let level = app.audio_level.clamp(0.0, 1.0) as f64;
-
-    let mut wave_chars = String::with_capacity(wave_width);
-    for i in 0..wave_width {
-        let x = i as f64;
-        let val = (0.3 + level * 0.7)
-            * ((x * 0.15 + tick * 0.3).sin() * 0.5
-                + (x * 0.08 - tick * 0.2).sin() * 0.3
-                + (x * 0.22 + tick * 0.5).sin() * 0.2);
-        let normalized = ((val + 1.0) / 2.0).clamp(0.0, 1.0);
-        let idx = (normalized * (BRAILLE_WAVE.len() - 1) as f64) as usize;
-        wave_chars.push(BRAILLE_WAVE[idx]);
-    }
 
     let secs = app.recording_duration_ms / 1000;
     let millis = (app.recording_duration_ms % 1000) / 100;
     let timer = format!("{:02}:{:02}.{}", secs / 60, secs % 60, millis);
-    let spinner_idx = (app.tick_count as usize) % BRAILLE_SPINNER.len();
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(&wave_chars, Style::default().fg(Color::Red))),
+        Line::from(Span::styled(
+            format!("\u{25CF} Recording  {}", timer),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} ", BRAILLE_SPINNER[spinner_idx]),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("Recording  {}", timer), Style::default().fg(Color::Red)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Press SPACE to stop", Style::default().fg(DIM))),
+        Line::from(Span::styled("SPACE to stop  /  ESC to cancel", Style::default().fg(DIM))),
     ];
 
-    let offset = mid_y.saturating_sub(3);
+    let offset = mid_y.saturating_sub(2);
     let content_area = Rect {
         x: inner.x,
         y: inner.y + offset,
@@ -296,39 +246,26 @@ fn render_transcribing_view(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let mid_y = inner.height / 2;
-    let tick = app.tick_count as usize;
 
-    let bar_width = 20usize;
-    let mut bar = String::with_capacity(bar_width);
-    for i in 0..bar_width {
-        let phase = ((i as f64 + tick as f64 * 0.5).sin() + 1.0) / 2.0;
-        let idx = (phase * (BRAILLE_WAVE.len() - 1) as f64) as usize;
-        bar.push(BRAILLE_WAVE[idx]);
-    }
-    let dots_idx = tick % BRAILLE_DOTS.len();
+    let dots = ".".repeat((app.tick_count as usize % 3) + 1);
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled(&bar, Style::default().fg(Color::Yellow))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("  {} ", BRAILLE_DOTS[dots_idx]),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Transcribing...", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(Span::styled(
+            format!("Transcribing{}", dots),
+            Style::default().fg(Color::Yellow),
+        )),
     ];
 
     if !app.current_partial.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("  \"{}\"", &app.current_partial),
+            format!("\"{}\"", &app.current_partial),
             Style::default().fg(Color::White).add_modifier(Modifier::DIM),
         )));
     }
 
-    let offset = mid_y.saturating_sub(3);
+    let offset = mid_y.saturating_sub(2);
     let content_area = Rect {
         x: inner.x,
         y: inner.y + offset,
@@ -372,7 +309,7 @@ fn render_idle_view(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.transcriptions.is_empty() {
+    if app.transcripts.is_empty() {
         let mid_y = inner.height / 2;
         let lines = vec![
             Line::from(Span::styled("Waiting for input...", Style::default().fg(DIM))),
@@ -389,13 +326,24 @@ fn render_idle_view(frame: &mut Frame, area: Rect, app: &App) {
         let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
         frame.render_widget(paragraph, content_area);
     } else {
-        let text = &app.transcriptions[app.current_index];
+        let transcript = &app.transcripts[app.current_index];
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("  > ", Style::default().fg(GREEN)),
-            Span::styled(text.clone(), Style::default().fg(Color::White)),
+            Span::styled(transcript.text.clone(), Style::default().fg(Color::White)),
+        ]));
+
+        // Metadata line: duration, relative time, cost
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("    ", Style::default().fg(DIM)),
+            Span::styled(transcript.duration_display(), Style::default().fg(DIM)),
+            Span::styled("  \u{00B7}  ", Style::default().fg(DIM)),
+            Span::styled(transcript.relative_time(), Style::default().fg(DIM)),
+            Span::styled("  \u{00B7}  ", Style::default().fg(DIM)),
+            Span::styled(format!("${:.6}", transcript.cost_usd), Style::default().fg(DIM)),
         ]));
 
         if app.yank_ticks_remaining > 0 {
@@ -470,7 +418,14 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(" Start/Stop  ", label_style),
     ];
 
-    if app.state == AppState::Idle && !app.transcriptions.is_empty() {
+    if app.state == AppState::Recording {
+        spans.extend(vec![
+            Span::styled("ESC", key_style),
+            Span::styled(" Cancel  ", label_style),
+        ]);
+    }
+
+    if app.state == AppState::Idle && !app.transcripts.is_empty() {
         spans.extend(vec![
             Span::styled("h", key_style),
             Span::styled("/", label_style),
@@ -481,14 +436,25 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
         ]);
     }
 
-    spans.extend(vec![
-        Span::styled("c", key_style),
-        Span::styled(" Clear  ", label_style),
-        Span::styled("q", key_style),
-        Span::styled(" Quit  ", label_style),
-        Span::styled("?", key_style),
-        Span::styled(" Help", label_style),
-    ]);
+    if app.state == AppState::Idle && !app.transcripts.is_empty() {
+        spans.extend(vec![
+            Span::styled("d", key_style),
+            Span::styled(" Del  ", label_style),
+            Span::styled("D", key_style),
+            Span::styled(" Del All  ", label_style),
+        ]);
+    }
+
+    if app.state != AppState::Recording {
+        spans.extend(vec![
+            Span::styled("S", key_style),
+            Span::styled(" Stats  ", label_style),
+            Span::styled("q", key_style),
+            Span::styled(" Quit  ", label_style),
+            Span::styled("?", key_style),
+            Span::styled(" Help", label_style),
+        ]);
+    }
 
     let controls = Line::from(spans);
     let paragraph = Paragraph::new(controls).style(Style::default().bg(bg));
@@ -500,7 +466,7 @@ fn render_help_modal(frame: &mut Frame) {
 
     // Center a box ~60 wide, ~18 tall
     let modal_width = 60u16.min(area.width.saturating_sub(4));
-    let modal_height = 20u16.min(area.height.saturating_sub(4));
+    let modal_height = 24u16.min(area.height.saturating_sub(4));
 
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -557,22 +523,38 @@ fn render_help_modal(frame: &mut Frame) {
             Span::styled("Start / stop recording", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
+            Span::styled("    ESC    ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Cancel recording / quit", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
             Span::styled("    h / l  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Navigate between transcriptions", Style::default().fg(DIM)),
+            Span::styled("Navigate between transcripts", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
             Span::styled("    y      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("Yank (copy) current to clipboard", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
-            Span::styled("    c      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Clear all transcriptions", Style::default().fg(DIM)),
+            Span::styled("    d      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Delete current transcript", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
-            Span::styled("    q/ESC  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("    D      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Delete all transcripts", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("    S      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Usage stats", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("    q      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("Quit", Style::default().fg(DIM)),
         ]),
         Line::from(""),
+        Line::from(Span::styled(
+            "  Transcripts saved to ~/.config/stt-tui/stt-tui.db",
+            Style::default().fg(DIM),
+        )),
         Line::from(Span::styled(
             "  Config: ~/.config/stt-tui/config.toml",
             Style::default().fg(DIM),
@@ -583,6 +565,89 @@ fn render_help_modal(frame: &mut Frame) {
             Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
         )),
     ];
+
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
+
+    frame.render_widget(paragraph, modal_area);
+}
+
+fn render_stats_modal(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let modal_width = 50u16.min(area.width.saturating_sub(4));
+    let modal_height = 20u16.min(area.height.saturating_sub(4));
+
+    let vertical = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(modal_height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let horizontal = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(modal_width),
+        Constraint::Fill(1),
+    ])
+    .split(vertical[1]);
+
+    let modal_area = horizontal[1];
+    frame.render_widget(Clear, modal_area);
+
+    let block = Block::default()
+        .title(" Usage Stats ")
+        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(GREEN));
+
+    let stats = match &app.usage_stats {
+        Some(s) => s,
+        None => {
+            let p = Paragraph::new("  No data available")
+                .block(block)
+                .style(Style::default().bg(Color::Rgb(15, 15, 15)));
+            frame.render_widget(p, modal_area);
+            return;
+        }
+    };
+
+    let label_style = Style::default().fg(DIM);
+    let val_style = Style::default().fg(Color::White);
+    let head_style = Style::default().fg(GREEN).add_modifier(Modifier::BOLD);
+
+    let mut content: Vec<Line> = Vec::new();
+
+    let periods = [
+        ("TODAY", &stats.today),
+        ("THIS WEEK", &stats.this_week),
+        ("THIS MONTH", &stats.this_month),
+        ("ALL TIME", &stats.all_time),
+    ];
+
+    for (name, period) in &periods {
+        content.push(Line::from(""));
+        content.push(Line::from(Span::styled(format!("  {}", name), head_style)));
+        content.push(Line::from(vec![
+            Span::styled("    Transcripts  ", label_style),
+            Span::styled(format!("{}", period.count), val_style),
+        ]));
+        content.push(Line::from(vec![
+            Span::styled("    Duration     ", label_style),
+            Span::styled(period.duration_display(), val_style),
+        ]));
+        content.push(Line::from(vec![
+            Span::styled("    Cost         ", label_style),
+            Span::styled(format!("${:.4}", period.cost_usd), val_style),
+        ]));
+    }
+
+    content.push(Line::from(""));
+    content.push(Line::from(Span::styled(
+        "  Press any key to close",
+        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+    )));
 
     let paragraph = Paragraph::new(content)
         .block(block)

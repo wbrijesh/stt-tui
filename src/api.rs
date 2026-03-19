@@ -24,6 +24,7 @@ impl ApiClient {
         &self,
         wav_bytes: Vec<u8>,
         tx: mpsc::UnboundedSender<AppEvent>,
+        duration_ms: u64,
     ) -> Result<()> {
         let file_part = multipart::Part::bytes(wav_bytes)
             .file_name("audio.wav")
@@ -68,7 +69,10 @@ impl ApiClient {
             }
         }
 
-        let _ = tx.send(AppEvent::TranscriptComplete(full_text.trim().to_string()));
+        let _ = tx.send(AppEvent::TranscriptComplete {
+            text: full_text.trim().to_string(),
+            duration_ms,
+        });
         Ok(())
     }
 }

@@ -247,7 +247,8 @@ fn render_transcribing_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let mid_y = inner.height / 2;
 
-    let dots = ".".repeat((app.tick_count as usize % 3) + 1);
+    let dot_count = ((app.tick_count / 3) as usize % 3) + 1;
+    let dots = format!("{}{}", ".".repeat(dot_count), " ".repeat(3 - dot_count));
 
     let mut lines = vec![
         Line::from(""),

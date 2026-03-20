@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, SettingsFocus, SettingsTab};
 
 const GREEN: Color = Color::Rgb(0, 180, 80);
 const DIM: Color = Color::Rgb(80, 80, 80);
@@ -27,16 +27,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_help_modal(frame);
     }
 
-    if app.show_stats {
-        render_stats_modal(frame, app);
-    }
-
-    if app.show_mic_picker {
-        render_mic_picker_modal(frame, app);
-    }
-
-    if app.show_backend_picker {
-        render_backend_picker_modal(frame, app);
+    if app.show_settings {
+        render_settings_modal(frame, app);
     }
 }
 
@@ -60,12 +52,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         AppState::Downloading => format!("{}  DOWNLOADING ", backend_tag),
         AppState::Recording => {
             let secs = app.recording_duration_ms / 1000;
-            format!(
-                "{}  REC {:02}:{:02} ",
-                backend_tag,
-                secs / 60,
-                secs % 60
-            )
+            format!("{}  REC {:02}:{:02} ", backend_tag, secs / 60, secs % 60)
         }
         AppState::Transcribing => format!("{}  TRANSCRIBING ", backend_tag),
         AppState::Error(_) => format!("{}  ERROR ", backend_tag),
@@ -134,7 +121,6 @@ fn render_setup_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let mid_y = inner.height / 2;
 
-    // Mask the key: show first 8 chars, rest as dots
     let masked: String = if app.api_key_input.is_empty() {
         String::new()
     } else if app.api_key_input.len() <= 8 {
@@ -147,7 +133,6 @@ fn render_setup_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let cursor = "\u{2588}";
 
-    // Heading lines rendered as Paragraph above the input
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -176,7 +161,6 @@ fn render_setup_view(frame: &mut Frame, area: Rect, app: &App) {
     let heading = Paragraph::new(lines).alignment(Alignment::Center);
     frame.render_widget(heading, heading_area);
 
-    // Input box — centered, bordered
     let input_width = 52u16.min(inner.width.saturating_sub(4));
     let input_x = inner.x + (inner.width.saturating_sub(input_width)) / 2;
     let input_y = inner.y + offset + 6;
@@ -201,7 +185,6 @@ fn render_setup_view(frame: &mut Frame, area: Rect, app: &App) {
     let input_paragraph = Paragraph::new(input_line).block(input_block);
     frame.render_widget(input_paragraph, input_area);
 
-    // Error / hint below input
     let hint_y = input_y + 3;
     let hint_area = Rect {
         x: inner.x,
@@ -251,7 +234,6 @@ fn render_download_view(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(DIM),
         )));
     } else if let Some((percent, downloaded, total)) = app.download_progress {
-        // Progress bar
         let bar_width = 30usize;
         let filled = (percent as usize * bar_width) / 100;
         let empty = bar_width - filled;
@@ -305,7 +287,10 @@ fn render_recording_view(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled("SPACE to stop  /  ESC to cancel", Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            "SPACE to stop  /  ESC to cancel",
+            Style::default().fg(DIM),
+        )),
     ];
 
     let offset = mid_y.saturating_sub(2);
@@ -368,9 +353,15 @@ fn render_error_view(frame: &mut Frame, area: Rect, msg: &str) {
     let mid_y = inner.height / 2;
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(format!("  ! {}", msg), Style::default().fg(Color::Red))),
+        Line::from(Span::styled(
+            format!("  ! {}", msg),
+            Style::default().fg(Color::Red),
+        )),
         Line::from(""),
-        Line::from(Span::styled("  Press any key to continue", Style::default().fg(DIM))),
+        Line::from(Span::styled(
+            "  Press any key to continue",
+            Style::default().fg(DIM),
+        )),
     ];
 
     let offset = mid_y.saturating_sub(2);
@@ -394,9 +385,15 @@ fn render_idle_view(frame: &mut Frame, area: Rect, app: &App) {
     if app.transcripts.is_empty() {
         let mid_y = inner.height / 2;
         let lines = vec![
-            Line::from(Span::styled("Waiting for input...", Style::default().fg(DIM))),
+            Line::from(Span::styled(
+                "Waiting for input...",
+                Style::default().fg(DIM),
+            )),
             Line::from(""),
-            Line::from(Span::styled("Press SPACE to start recording", Style::default().fg(DIM))),
+            Line::from(Span::styled(
+                "Press SPACE to start recording",
+                Style::default().fg(DIM),
+            )),
         ];
         let offset = mid_y.saturating_sub(1);
         let content_area = Rect {
@@ -417,7 +414,6 @@ fn render_idle_view(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(transcript.text.clone(), Style::default().fg(Color::White)),
         ]));
 
-        // Metadata line: duration, relative time, cost
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("    ", Style::default().fg(DIM)),
@@ -425,7 +421,10 @@ fn render_idle_view(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("  \u{00B7}  ", Style::default().fg(DIM)),
             Span::styled(transcript.relative_time(), Style::default().fg(DIM)),
             Span::styled("  \u{00B7}  ", Style::default().fg(DIM)),
-            Span::styled(format!("${:.6}", transcript.cost_usd), Style::default().fg(DIM)),
+            Span::styled(
+                format!("${:.6}", transcript.cost_usd),
+                Style::default().fg(DIM),
+            ),
         ]));
 
         if app.yank_ticks_remaining > 0 {
@@ -465,7 +464,9 @@ fn render_audio_bar(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(
             " AUDIO  ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(meter, Style::default().fg(GREEN)),
     ];
@@ -479,7 +480,10 @@ fn render_audio_bar(frame: &mut Frame, area: Rect, app: &App) {
 fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
     let bg = GREEN;
     let fg = Color::Black;
-    let key_style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(fg)
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(fg).bg(bg);
 
     if app.state == AppState::Setup {
@@ -518,27 +522,14 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
         ]);
     }
 
-    if app.state == AppState::Idle && !app.transcripts.is_empty() {
-        spans.extend(vec![
-            Span::styled("d", key_style),
-            Span::styled(" Del  ", label_style),
-            Span::styled("D", key_style),
-            Span::styled(" Del All  ", label_style),
-        ]);
-    }
-
     if app.state != AppState::Recording {
         spans.extend(vec![
-            Span::styled("b", key_style),
-            Span::styled(" Backend  ", label_style),
-            Span::styled("m", key_style),
-            Span::styled(" Mic  ", label_style),
-            Span::styled("S", key_style),
-            Span::styled(" Stats  ", label_style),
-            Span::styled("q", key_style),
-            Span::styled(" Quit  ", label_style),
+            Span::styled(",", key_style),
+            Span::styled(" Settings  ", label_style),
             Span::styled("?", key_style),
-            Span::styled(" Help", label_style),
+            Span::styled(" Help  ", label_style),
+            Span::styled("q", key_style),
+            Span::styled(" Quit", label_style),
         ]);
     }
 
@@ -549,10 +540,8 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_help_modal(frame: &mut Frame) {
     let area = frame.area();
-
-    // Center a box ~60 wide, ~18 tall
     let modal_width = 60u16.min(area.width.saturating_sub(4));
-    let modal_height = 26u16.min(area.height.saturating_sub(4));
+    let modal_height = 22u16.min(area.height.saturating_sub(4));
 
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -569,8 +558,6 @@ fn render_help_modal(frame: &mut Frame) {
     .split(vertical[1]);
 
     let modal_area = horizontal[1];
-
-    // Clear the area behind the modal
     frame.render_widget(Clear, modal_area);
 
     let block = Block::default()
@@ -585,65 +572,22 @@ fn render_help_modal(frame: &mut Frame) {
             "  A terminal speech-to-text interface.",
             Style::default().fg(Color::White),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Record your voice directly from the terminal",
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            "  and get transcriptions powered by OpenAI.",
-            Style::default().fg(DIM),
-        )),
         Line::from(Span::styled(
             "  No browser, no GUI, no distractions.",
             Style::default().fg(DIM),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  USAGE",
+            "  KEYS",
             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("    SPACE  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Start / stop recording", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    ESC    ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Cancel recording / quit", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    h / l  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Navigate between transcripts", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    y      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Yank (copy) current to clipboard", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    d      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Delete current transcript", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    D      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Delete all transcripts", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    b      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Switch backend (local/openai)", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    m      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Select microphone", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    S      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Usage stats", Style::default().fg(DIM)),
-        ]),
-        Line::from(vec![
-            Span::styled("    q      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("Quit", Style::default().fg(DIM)),
-        ]),
+        help_line("    SPACE  ", "Start / stop recording"),
+        help_line("    ESC    ", "Cancel recording / quit"),
+        help_line("    h / l  ", "Navigate between transcripts"),
+        help_line("    y      ", "Yank (copy) current to clipboard"),
+        help_line("    ,      ", "Settings (backend, mic, stats, data)"),
+        help_line("    q      ", "Quit"),
         Line::from(""),
         Line::from(Span::styled(
             "  Transcripts saved to ~/.config/stt-tui/stt-tui.db",
@@ -668,94 +612,24 @@ fn render_help_modal(frame: &mut Frame) {
     frame.render_widget(paragraph, modal_area);
 }
 
-fn render_stats_modal(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let modal_width = 50u16.min(area.width.saturating_sub(4));
-    let modal_height = 20u16.min(area.height.saturating_sub(4));
-
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(modal_height),
-        Constraint::Fill(1),
+fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(
+            key,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(desc, Style::default().fg(DIM)),
     ])
-    .split(area);
-
-    let horizontal = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(modal_width),
-        Constraint::Fill(1),
-    ])
-    .split(vertical[1]);
-
-    let modal_area = horizontal[1];
-    frame.render_widget(Clear, modal_area);
-
-    let block = Block::default()
-        .title(" Usage Stats ")
-        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(GREEN));
-
-    let stats = match &app.usage_stats {
-        Some(s) => s,
-        None => {
-            let p = Paragraph::new("  No data available")
-                .block(block)
-                .style(Style::default().bg(Color::Rgb(15, 15, 15)));
-            frame.render_widget(p, modal_area);
-            return;
-        }
-    };
-
-    let label_style = Style::default().fg(DIM);
-    let val_style = Style::default().fg(Color::White);
-    let head_style = Style::default().fg(GREEN).add_modifier(Modifier::BOLD);
-
-    let mut content: Vec<Line> = Vec::new();
-
-    let periods = [
-        ("TODAY", &stats.today),
-        ("THIS WEEK", &stats.this_week),
-        ("THIS MONTH", &stats.this_month),
-        ("ALL TIME", &stats.all_time),
-    ];
-
-    for (name, period) in &periods {
-        content.push(Line::from(""));
-        content.push(Line::from(Span::styled(format!("  {}", name), head_style)));
-        content.push(Line::from(vec![
-            Span::styled("    Transcripts  ", label_style),
-            Span::styled(format!("{}", period.count), val_style),
-        ]));
-        content.push(Line::from(vec![
-            Span::styled("    Duration     ", label_style),
-            Span::styled(period.duration_display(), val_style),
-        ]));
-        content.push(Line::from(vec![
-            Span::styled("    Cost         ", label_style),
-            Span::styled(format!("${:.4}", period.cost_usd), val_style),
-        ]));
-    }
-
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "  Press any key to close",
-        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-    )));
-
-    let paragraph = Paragraph::new(content)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
-
-    frame.render_widget(paragraph, modal_area);
 }
 
-fn render_mic_picker_modal(frame: &mut Frame, app: &App) {
+// -- Settings modal with sidebar + content --
+
+fn render_settings_modal(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let device_count = app.mic_devices.len();
-    let modal_height = (device_count as u16 + 6).min(area.height.saturating_sub(4));
-    let modal_width = 50u16.min(area.width.saturating_sub(4));
+    let modal_width = 64u16.min(area.width.saturating_sub(4));
+    let modal_height = 22u16.min(area.height.saturating_sub(4));
 
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -775,22 +649,40 @@ fn render_mic_picker_modal(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, modal_area);
 
     let block = Block::default()
-        .title(" Select Microphone ")
+        .title(" Settings ")
         .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(GREEN));
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(""));
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
 
-    for (i, name) in app.mic_devices.iter().enumerate() {
-        let is_selected = i == app.mic_selected;
-        let is_active = name == &app.mic_current_name;
+    let sidebar_width = 14u16;
+    let cols = Layout::horizontal([
+        Constraint::Length(sidebar_width),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
 
-        let marker = if is_active { "\u{25CF} " } else { "  " };
-        let prefix = if is_selected { " \u{25B6} " } else { "   " };
+    let sidebar_focused = app.settings.focus == SettingsFocus::Sidebar;
 
-        let style = if is_selected {
+    // Sidebar
+    let mut sidebar_lines: Vec<Line> = Vec::new();
+    sidebar_lines.push(Line::from(""));
+    for (i, tab) in SettingsTab::all().iter().enumerate() {
+        let is_selected = i == app.settings.sidebar_cursor;
+        let is_active = *tab == app.settings.tab;
+
+        let prefix = if is_selected && sidebar_focused {
+            " \u{25B6} "
+        } else if is_active {
+            "   "
+        } else {
+            "   "
+        };
+
+        let style = if is_selected && sidebar_focused {
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD)
@@ -800,76 +692,77 @@ fn render_mic_picker_modal(frame: &mut Frame, app: &App) {
             Style::default().fg(DIM)
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(prefix, style),
-            Span::styled(marker, Style::default().fg(GREEN)),
-            Span::styled(name.clone(), style),
-        ]));
+        sidebar_lines.push(Line::from(Span::styled(
+            format!("{}{}", prefix, tab.label()),
+            style,
+        )));
+    }
+    let sidebar = Paragraph::new(sidebar_lines);
+    frame.render_widget(sidebar, cols[0]);
+
+    // Divider
+    let divider_height = cols[1].height;
+    let divider_lines: Vec<Line> = (0..divider_height)
+        .map(|_| Line::from(Span::styled("\u{2502}", Style::default().fg(DIM))))
+        .collect();
+    let divider = Paragraph::new(divider_lines);
+    frame.render_widget(divider, cols[1]);
+
+    // Content
+    let content_focused = app.settings.focus == SettingsFocus::Content;
+    let content_area = cols[2];
+    match app.settings.tab {
+        SettingsTab::Backend => {
+            render_settings_backend(frame, content_area, app, content_focused)
+        }
+        SettingsTab::Microphone => {
+            render_settings_mic(frame, content_area, app, content_focused)
+        }
+        SettingsTab::Stats => render_settings_stats(frame, content_area, app),
+        SettingsTab::Data => render_settings_data(frame, content_area, app, content_focused),
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  j/k move  ENTER select  ESC close",
+    // Footer
+    let footer_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    };
+    let hint = if sidebar_focused {
+        " j/k navigate  \u{2192}/Enter open  ESC close"
+    } else {
+        " j/k navigate  Enter confirm  \u{2190} back  ESC close"
+    };
+    let footer = Paragraph::new(Line::from(Span::styled(
+        hint,
         Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
     )));
-
-    let mic_paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
-
-    frame.render_widget(mic_paragraph, modal_area);
+    frame.render_widget(footer, footer_area);
 }
 
-fn render_backend_picker_modal(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let modal_height = 9u16.min(area.height.saturating_sub(4));
-    let modal_width = 44u16.min(area.width.saturating_sub(4));
-
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(modal_height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    let horizontal = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(modal_width),
-        Constraint::Fill(1),
-    ])
-    .split(vertical[1]);
-
-    let modal_area = horizontal[1];
-    frame.render_widget(Clear, modal_area);
-
-    let block = Block::default()
-        .title(" Select Backend ")
-        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(GREEN));
+fn render_settings_backend(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
 
     let backends = [
-        ("Local", "Parakeet v3, offline, free"),
-        ("OpenAI", "gpt-4o-mini-transcribe, API key required"),
+        ("Local", "Parakeet v3, offline"),
+        ("OpenAI", "API, gpt-4o-mini-transcribe"),
     ];
 
-    let current_idx = match app.backend {
+    let current_backend_idx = match app.backend {
         crate::config::Backend::Local => 0,
         crate::config::Backend::Openai => 1,
     };
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(""));
-
     for (i, (name, desc)) in backends.iter().enumerate() {
-        let is_selected = i == app.backend_selected;
-        let is_active = i == current_idx;
+        let is_cursor = focused && app.settings.content_cursor == i;
+        let is_active = i == current_backend_idx;
 
         let marker = if is_active { "\u{25CF} " } else { "  " };
-        let prefix = if is_selected { " \u{25B6} " } else { "   " };
+        let prefix = if is_cursor { " \u{25B6} " } else { "   " };
 
-        let style = if is_selected {
+        let style = if is_cursor {
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD)
@@ -887,16 +780,133 @@ fn render_backend_picker_modal(frame: &mut Frame, app: &App) {
         ]));
     }
 
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_settings_mic(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    if app.mic_devices.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   No devices found",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (i, name) in app.mic_devices.iter().enumerate() {
+            let is_cursor = focused && app.settings.content_cursor == i;
+            let is_active = name == &app.mic_current_name;
+
+            let marker = if is_active { "\u{25CF} " } else { "  " };
+            let prefix = if is_cursor { " \u{25B6} " } else { "   " };
+
+            let style = if is_cursor {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().fg(GREEN)
+            } else {
+                Style::default().fg(DIM)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(marker, Style::default().fg(GREEN)),
+                Span::styled(name.clone(), style),
+            ]));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_settings_stats(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    let stats = match &app.usage_stats {
+        Some(s) => s,
+        None => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " No usage data",
+                Style::default().fg(DIM),
+            )));
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, area);
+            return;
+        }
+    };
+
+    let label_style = Style::default().fg(DIM);
+    let val_style = Style::default().fg(Color::White);
+    let head_style = Style::default().fg(GREEN).add_modifier(Modifier::BOLD);
+
+    let periods = [
+        ("TODAY", &stats.today),
+        ("THIS WEEK", &stats.this_week),
+        ("THIS MONTH", &stats.this_month),
+        ("ALL TIME", &stats.all_time),
+    ];
+
+    for (name, period) in &periods {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(format!(" {}", name), head_style)));
+        lines.push(Line::from(vec![
+            Span::styled("   Transcripts  ", label_style),
+            Span::styled(format!("{}", period.count), val_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("   Duration     ", label_style),
+            Span::styled(period.duration_display(), val_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("   Cost         ", label_style),
+            Span::styled(format!("${:.4}", period.cost_usd), val_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_settings_data(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  j/k move  ENTER select  ESC close",
-        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+        " Transcripts",
+        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    let items = ["Delete current transcript", "Delete all transcripts"];
+
+    for (i, label) in items.iter().enumerate() {
+        let is_cursor = focused && app.settings.content_cursor == i;
+        let prefix = if is_cursor { " \u{25B6} " } else { "   " };
+
+        let style = if is_cursor {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!("{}{}", prefix, label),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(" {} transcripts in history", app.transcripts.len()),
+        Style::default().fg(DIM),
     )));
 
-    let backend_paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
-
-    frame.render_widget(backend_paragraph, modal_area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }

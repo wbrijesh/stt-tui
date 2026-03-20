@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,57 @@ pub enum AppState {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsTab {
+    Backend,
+    Microphone,
+    Stats,
+    Data,
+}
+
+impl SettingsTab {
+    pub fn all() -> &'static [SettingsTab] {
+        &[
+            SettingsTab::Backend,
+            SettingsTab::Microphone,
+            SettingsTab::Stats,
+            SettingsTab::Data,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SettingsTab::Backend => "Backend",
+            SettingsTab::Microphone => "Microphone",
+            SettingsTab::Stats => "Stats",
+            SettingsTab::Data => "Data",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn index(&self) -> usize {
+        match self {
+            SettingsTab::Backend => 0,
+            SettingsTab::Microphone => 1,
+            SettingsTab::Stats => 2,
+            SettingsTab::Data => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsFocus {
+    Sidebar,
+    Content,
+}
+
+pub struct SettingsState {
+    pub tab: SettingsTab,
+    pub focus: SettingsFocus,
+    pub sidebar_cursor: usize,
+    pub content_cursor: usize,
+}
+
 pub struct App {
     pub state: AppState,
     pub backend: Backend,
@@ -35,20 +87,17 @@ pub struct App {
     pub tick_count: u64,
     pub yank_ticks_remaining: u64,
     pub show_help: bool,
-    pub show_stats: bool,
-    pub show_mic_picker: bool,
-    pub show_backend_picker: bool,
+    pub show_settings: bool,
+    pub settings: SettingsState,
     pub mic_devices: Vec<String>,
-    pub mic_selected: usize,
     pub mic_current_name: String,
-    pub backend_selected: usize,
     pub usage_stats: Option<UsageStats>,
     pub should_quit: bool,
     pub api_key_input: String,
     pub setup_error: Option<String>,
     pub total_cost_usd: f64,
     pub model_loaded: bool,
-    pub download_progress: Option<(u8, f64, f64)>, // percent, downloaded_mb, total_mb
+    pub download_progress: Option<(u8, f64, f64)>,
     pub model_extracting: bool,
 
     audio_manager: Option<Arc<Mutex<AudioManager>>>,
@@ -121,11 +170,6 @@ impl App {
             .map(|e| e.lock().unwrap().is_loaded())
             .unwrap_or(false);
 
-        let backend_selected = match backend {
-            Backend::Local => 0,
-            Backend::Openai => 1,
-        };
-
         Self {
             state,
             backend,
@@ -139,13 +183,15 @@ impl App {
             tick_count: 0,
             yank_ticks_remaining: 0,
             show_help: false,
-            show_stats: false,
-            show_mic_picker: false,
-            show_backend_picker: false,
+            show_settings: false,
+            settings: SettingsState {
+                tab: SettingsTab::Backend,
+                focus: SettingsFocus::Sidebar,
+                sidebar_cursor: 0,
+                content_cursor: 0,
+            },
             mic_devices: Vec::new(),
-            mic_selected: 0,
             mic_current_name,
-            backend_selected,
             usage_stats: None,
             should_quit: false,
             api_key_input: String::new(),
@@ -161,6 +207,17 @@ impl App {
             model,
             db: db.map(Arc::new),
             pending_duration_ms: 0,
+        }
+    }
+
+    // -- Item counts per settings tab (for cursor bounds) --
+
+    pub fn settings_content_count(&self) -> usize {
+        match self.settings.tab {
+            SettingsTab::Backend => 2,
+            SettingsTab::Microphone => self.mic_devices.len().max(1),
+            SettingsTab::Stats => 0,
+            SettingsTab::Data => 2,
         }
     }
 
@@ -208,7 +265,6 @@ impl App {
             AppEvent::TranscriptComplete { text, duration_ms } => {
                 if !text.is_empty() {
                     let mut transcript = Transcript::new(text, duration_ms);
-                    // Local transcriptions are free
                     if self.backend == Backend::Local {
                         transcript.cost_usd = 0.0;
                     }
@@ -229,7 +285,6 @@ impl App {
                 }
                 self.current_partial.clear();
                 self.state = AppState::Idle;
-                // Unload local model immediately after transcription
                 if self.backend == Backend::Local && self.model_loaded {
                     self.unload_local_model();
                 }
@@ -291,18 +346,8 @@ impl App {
             return;
         }
 
-        if self.show_stats {
-            self.show_stats = false;
-            return;
-        }
-
-        if self.show_mic_picker {
-            self.handle_mic_picker_key(key);
-            return;
-        }
-
-        if self.show_backend_picker {
-            self.handle_backend_picker_key(key);
+        if self.show_settings {
+            self.handle_settings_key(key);
             return;
         }
 
@@ -322,29 +367,9 @@ impl App {
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char(',') => {
                 if self.state == AppState::Idle {
-                    self.open_backend_picker();
-                }
-            }
-            KeyCode::Char('m') => {
-                if self.state == AppState::Idle {
-                    self.open_mic_picker();
-                }
-            }
-            KeyCode::Char('S') => {
-                if self.state == AppState::Idle {
-                    if let Some(db) = &self.db {
-                        match fetch_usage_stats(db) {
-                            Ok(stats) => {
-                                self.usage_stats = Some(stats);
-                                self.show_stats = true;
-                            }
-                            Err(e) => {
-                                self.state = AppState::Error(format!("Stats error: {}", e));
-                            }
-                        }
-                    }
+                    self.open_settings();
                 }
             }
             KeyCode::Char('q') => {
@@ -371,19 +396,117 @@ impl App {
                     self.yank_current();
                 }
             }
-            KeyCode::Char('d') => {
-                if self.state == AppState::Idle && !self.transcripts.is_empty() {
-                    self.delete_current();
+            _ => {}
+        }
+    }
+
+    // -- Settings panel --
+
+    fn open_settings(&mut self) {
+        self.mic_devices = AudioManager::list_devices();
+        if let Some(db) = &self.db {
+            self.usage_stats = fetch_usage_stats(db).ok();
+        }
+        self.settings.tab = SettingsTab::Backend;
+        self.settings.focus = SettingsFocus::Sidebar;
+        self.settings.sidebar_cursor = 0;
+        self.settings.content_cursor = 0;
+        self.show_settings = true;
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char(',') => {
+                self.show_settings = false;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.settings.focus == SettingsFocus::Sidebar {
+                    let count = self.settings_content_count();
+                    if count > 0 {
+                        self.settings.focus = SettingsFocus::Content;
+                        self.settings.content_cursor = 0;
+                    }
                 }
             }
-            KeyCode::Char('D') => {
-                if self.state == AppState::Idle && !self.transcripts.is_empty() {
-                    self.delete_all();
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.settings.focus == SettingsFocus::Content {
+                    self.settings.focus = SettingsFocus::Sidebar;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => match self.settings.focus {
+                SettingsFocus::Sidebar => {
+                    let tabs = SettingsTab::all();
+                    self.settings.sidebar_cursor =
+                        (self.settings.sidebar_cursor + 1).min(tabs.len() - 1);
+                    self.settings.tab = tabs[self.settings.sidebar_cursor];
+                    self.settings.content_cursor = 0;
+                }
+                SettingsFocus::Content => {
+                    let max = self.settings_content_count();
+                    if max > 0 {
+                        self.settings.content_cursor =
+                            (self.settings.content_cursor + 1).min(max - 1);
+                    }
+                }
+            },
+            KeyCode::Up | KeyCode::Char('k') => match self.settings.focus {
+                SettingsFocus::Sidebar => {
+                    let tabs = SettingsTab::all();
+                    self.settings.sidebar_cursor =
+                        self.settings.sidebar_cursor.saturating_sub(1);
+                    self.settings.tab = tabs[self.settings.sidebar_cursor];
+                    self.settings.content_cursor = 0;
+                }
+                SettingsFocus::Content => {
+                    self.settings.content_cursor =
+                        self.settings.content_cursor.saturating_sub(1);
+                }
+            },
+            KeyCode::Enter => {
+                if self.settings.focus == SettingsFocus::Content {
+                    self.settings_confirm();
+                } else {
+                    // Enter on sidebar moves focus to content
+                    let count = self.settings_content_count();
+                    if count > 0 {
+                        self.settings.focus = SettingsFocus::Content;
+                        self.settings.content_cursor = 0;
+                    }
                 }
             }
             _ => {}
         }
     }
+
+    fn settings_confirm(&mut self) {
+        let cursor = self.settings.content_cursor;
+        match self.settings.tab {
+            SettingsTab::Backend => match cursor {
+                0 => self.set_backend(Backend::Local),
+                1 => self.set_backend(Backend::Openai),
+                _ => {}
+            },
+            SettingsTab::Microphone => {
+                self.select_mic(cursor);
+            }
+            SettingsTab::Stats => {}
+            SettingsTab::Data => match cursor {
+                0 => {
+                    if !self.transcripts.is_empty() {
+                        self.delete_current();
+                    }
+                }
+                1 => {
+                    if !self.transcripts.is_empty() {
+                        self.delete_all();
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    // -- Setup (API key entry) --
 
     fn handle_setup_key(&mut self, key: KeyEvent) {
         match key.code {
@@ -426,39 +549,7 @@ impl App {
         }
     }
 
-    // -- Backend picker --
-
-    fn open_backend_picker(&mut self) {
-        self.backend_selected = match self.backend {
-            Backend::Local => 0,
-            Backend::Openai => 1,
-        };
-        self.show_backend_picker = true;
-    }
-
-    fn handle_backend_picker_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.backend_selected = (self.backend_selected + 1).min(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.backend_selected = self.backend_selected.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                self.show_backend_picker = false;
-                let new_backend = if self.backend_selected == 0 {
-                    Backend::Local
-                } else {
-                    Backend::Openai
-                };
-                self.set_backend(new_backend);
-            }
-            KeyCode::Esc | KeyCode::Char('b') => {
-                self.show_backend_picker = false;
-            }
-            _ => {}
-        }
-    }
+    // -- Backend --
 
     fn set_backend(&mut self, backend: Backend) {
         if self.backend == backend {
@@ -466,7 +557,6 @@ impl App {
         }
         self.backend = backend.clone();
 
-        // Persist to config
         if let Ok(Some(mut config)) = Config::load() {
             config.backend = backend.clone();
             let _ = config.save();
@@ -479,49 +569,13 @@ impl App {
             let _ = config.save();
         }
 
-        // If switching to OpenAI and no API key, show setup
         if backend == Backend::Openai && self.api_client.is_none() {
+            self.show_settings = false;
             self.state = AppState::Setup;
         }
     }
 
-    // -- Mic picker --
-
-    fn open_mic_picker(&mut self) {
-        let devices = AudioManager::list_devices();
-        if devices.is_empty() {
-            self.state = AppState::Error("No input devices found".to_string());
-            return;
-        }
-        let current_idx = devices
-            .iter()
-            .position(|name| name == &self.mic_current_name)
-            .unwrap_or(0);
-        self.mic_devices = devices;
-        self.mic_selected = current_idx;
-        self.show_mic_picker = true;
-    }
-
-    fn handle_mic_picker_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.mic_selected + 1 < self.mic_devices.len() {
-                    self.mic_selected += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mic_selected = self.mic_selected.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                self.select_mic(self.mic_selected);
-                self.show_mic_picker = false;
-            }
-            KeyCode::Esc | KeyCode::Char('m') => {
-                self.show_mic_picker = false;
-            }
-            _ => {}
-        }
-    }
+    // -- Mic --
 
     fn select_mic(&mut self, index: usize) {
         if let Some(mgr) = &self.audio_manager {
@@ -532,6 +586,7 @@ impl App {
                 }
                 Err(e) => {
                     self.state = AppState::Error(format!("Failed to set mic: {}", e));
+                    self.show_settings = false;
                 }
             }
         }
@@ -548,11 +603,9 @@ impl App {
             }
         };
 
-        // Check if model is downloaded
         {
             let e = engine.lock().unwrap();
             if !e.is_model_downloaded() {
-                // Need to download first
                 self.state = AppState::Downloading;
                 let tx = self.event_tx.clone();
                 tokio::spawn(async move {
@@ -560,8 +613,6 @@ impl App {
                         let _ = tx.send(AppEvent::ModelError(format!("Download failed: {}", e)));
                     }
                 });
-                // Re-queue the recording for after download
-                // For now, user will need to record again
                 return;
             }
         }
@@ -569,11 +620,9 @@ impl App {
         let tx = self.event_tx.clone();
         let dur = self.pending_duration_ms;
 
-        // Load model + transcribe in a blocking task
         tokio::task::spawn_blocking(move || {
             let mut e = engine.lock().unwrap();
 
-            // Load if not loaded
             if !e.is_loaded() {
                 if let Err(err) = e.load() {
                     let _ = tx.send(AppEvent::ApiError(format!("Model load error: {}", err)));
@@ -582,7 +631,6 @@ impl App {
                 let _ = tx.send(AppEvent::ModelLoaded);
             }
 
-            // Decode WAV bytes back to f32 samples
             let samples = match decode_wav(&wav_bytes) {
                 Ok(s) => s,
                 Err(err) => {
@@ -638,6 +686,9 @@ impl App {
     }
 
     fn delete_current(&mut self) {
+        if self.transcripts.is_empty() {
+            return;
+        }
         let transcript = &self.transcripts[self.current_index];
         if let Some(db) = &self.db {
             let _ = db.soft_delete(transcript.id);
@@ -680,7 +731,6 @@ impl App {
 
         match self.state {
             AppState::Idle => {
-                // For local backend, check model is downloaded before recording
                 if self.backend == Backend::Local {
                     if let Some(engine) = &self.local_engine {
                         let e = engine.lock().unwrap();
@@ -727,12 +777,10 @@ impl App {
     }
 }
 
-/// Decode WAV bytes (16-bit PCM mono 16kHz) back to f32 samples
 fn decode_wav(wav_bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
     use std::io::Cursor;
     let cursor = Cursor::new(wav_bytes);
-    let mut reader =
-        hound::WavReader::new(cursor).context("Failed to read WAV")?;
+    let mut reader = hound::WavReader::new(cursor).context("Failed to read WAV")?;
 
     let samples: Vec<f32> = reader
         .samples::<i16>()
@@ -742,5 +790,3 @@ fn decode_wav(wav_bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
 
     Ok(samples)
 }
-
-use anyhow::Context;

@@ -3,6 +3,7 @@ mod app;
 mod audio;
 mod config;
 mod event;
+mod local;
 mod storage;
 mod ui;
 

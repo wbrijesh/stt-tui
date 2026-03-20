@@ -9,6 +9,11 @@ pub enum AppEvent {
     RecordingComplete(Vec<u8>),
     TranscriptDelta(String),
     TranscriptComplete { text: String, duration_ms: u64 },
+    ModelDownloadProgress { percent: u8, downloaded_mb: f64, total_mb: f64 },
+    ModelExtracting,
+    ModelReady,
+    ModelLoaded,
+    ModelError(String),
     ApiError(String),
     Tick,
 }

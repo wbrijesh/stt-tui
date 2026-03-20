@@ -34,32 +34,50 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_mic_picker {
         render_mic_picker_modal(frame, app);
     }
+
+    if app.show_backend_picker {
+        render_backend_picker_modal(frame, app);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let bg = GREEN;
     let fg = Color::Black;
 
+    let backend_tag = match &app.backend {
+        crate::config::Backend::Local => {
+            if app.model_loaded {
+                "LOCAL [loaded]"
+            } else {
+                "LOCAL"
+            }
+        }
+        crate::config::Backend::Openai => "OPENAI",
+    };
+
     let right_text = match &app.state {
-        AppState::Setup => "SETUP ".to_string(),
+        AppState::Setup => format!("{}  SETUP ", backend_tag),
+        AppState::Downloading => format!("{}  DOWNLOADING ", backend_tag),
         AppState::Recording => {
             let secs = app.recording_duration_ms / 1000;
             format!(
-                "REC {:02}:{:02} ",
+                "{}  REC {:02}:{:02} ",
+                backend_tag,
                 secs / 60,
                 secs % 60
             )
         }
-        AppState::Transcribing => "TRANSCRIBING ".to_string(),
-        AppState::Error(_) => "ERROR ".to_string(),
+        AppState::Transcribing => format!("{}  TRANSCRIBING ", backend_tag),
+        AppState::Error(_) => format!("{}  ERROR ", backend_tag),
         AppState::Idle => {
             if app.transcripts.is_empty() {
-                "READY ".to_string()
+                format!("{}  READY ", backend_tag)
             } else {
                 let has_prev = app.current_index > 0;
                 let has_next = app.current_index < app.transcripts.len() - 1;
                 format!(
-                    "{} {}/{} {} ",
+                    "{}  {} {}/{} {} ",
+                    backend_tag,
                     if has_prev { "\u{25C0}" } else { " " },
                     app.current_index + 1,
                     app.transcripts.len(),
@@ -99,6 +117,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     match &app.state {
         AppState::Setup => render_setup_view(frame, area, app),
+        AppState::Downloading => render_download_view(frame, area, app),
         AppState::Recording => render_recording_view(frame, area, app),
         AppState::Transcribing => render_transcribing_view(frame, area, app),
         AppState::Error(msg) => render_error_view(frame, area, msg),
@@ -206,6 +225,64 @@ fn render_setup_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let hint = Paragraph::new(hint_lines).alignment(Alignment::Center);
     frame.render_widget(hint, hint_area);
+}
+
+fn render_download_view(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT)
+        .border_style(Style::default().fg(DIM));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mid_y = inner.height / 2;
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Downloading Parakeet v3 model",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+    ];
+
+    if app.model_extracting {
+        lines.push(Line::from(Span::styled(
+            "Extracting model files...",
+            Style::default().fg(DIM),
+        )));
+    } else if let Some((percent, downloaded, total)) = app.download_progress {
+        // Progress bar
+        let bar_width = 30usize;
+        let filled = (percent as usize * bar_width) / 100;
+        let empty = bar_width - filled;
+        let bar = format!(
+            "[{}{}] {}%",
+            "\u{2588}".repeat(filled),
+            "\u{2591}".repeat(empty),
+            percent
+        );
+        lines.push(Line::from(Span::styled(bar, Style::default().fg(GREEN))));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("{:.0} / {:.0} MB", downloaded, total),
+            Style::default().fg(DIM),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Preparing download...",
+            Style::default().fg(DIM),
+        )));
+    }
+
+    let offset = mid_y.saturating_sub(3);
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y + offset,
+        width: inner.width,
+        height: inner.height.saturating_sub(offset),
+    };
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+    frame.render_widget(paragraph, content_area);
 }
 
 fn render_recording_view(frame: &mut Frame, area: Rect, app: &App) {
@@ -452,6 +529,8 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App) {
 
     if app.state != AppState::Recording {
         spans.extend(vec![
+            Span::styled("b", key_style),
+            Span::styled(" Backend  ", label_style),
             Span::styled("m", key_style),
             Span::styled(" Mic  ", label_style),
             Span::styled("S", key_style),
@@ -473,7 +552,7 @@ fn render_help_modal(frame: &mut Frame) {
 
     // Center a box ~60 wide, ~18 tall
     let modal_width = 60u16.min(area.width.saturating_sub(4));
-    let modal_height = 25u16.min(area.height.saturating_sub(4));
+    let modal_height = 26u16.min(area.height.saturating_sub(4));
 
     let vertical = Layout::vertical([
         Constraint::Fill(1),
@@ -548,6 +627,10 @@ fn render_help_modal(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("    D      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("Delete all transcripts", Style::default().fg(DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("    b      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Switch backend (local/openai)", Style::default().fg(DIM)),
         ]),
         Line::from(vec![
             Span::styled("    m      ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
@@ -736,4 +819,84 @@ fn render_mic_picker_modal(frame: &mut Frame, app: &App) {
         .style(Style::default().bg(Color::Rgb(15, 15, 15)));
 
     frame.render_widget(mic_paragraph, modal_area);
+}
+
+fn render_backend_picker_modal(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let modal_height = 9u16.min(area.height.saturating_sub(4));
+    let modal_width = 44u16.min(area.width.saturating_sub(4));
+
+    let vertical = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(modal_height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let horizontal = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(modal_width),
+        Constraint::Fill(1),
+    ])
+    .split(vertical[1]);
+
+    let modal_area = horizontal[1];
+    frame.render_widget(Clear, modal_area);
+
+    let block = Block::default()
+        .title(" Select Backend ")
+        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(GREEN));
+
+    let backends = [
+        ("Local", "Parakeet v3, offline, free"),
+        ("OpenAI", "gpt-4o-mini-transcribe, API key required"),
+    ];
+
+    let current_idx = match app.backend {
+        crate::config::Backend::Local => 0,
+        crate::config::Backend::Openai => 1,
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (i, (name, desc)) in backends.iter().enumerate() {
+        let is_selected = i == app.backend_selected;
+        let is_active = i == current_idx;
+
+        let marker = if is_active { "\u{25CF} " } else { "  " };
+        let prefix = if is_selected { " \u{25B6} " } else { "   " };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(GREEN)
+        } else {
+            Style::default().fg(DIM)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(marker, Style::default().fg(GREEN)),
+            Span::styled(format!("{}  ", name), style),
+            Span::styled(*desc, Style::default().fg(DIM)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k move  ENTER select  ESC close",
+        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+    )));
+
+    let backend_paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(Color::Rgb(15, 15, 15)));
+
+    frame.render_widget(backend_paragraph, modal_area);
 }

@@ -3,8 +3,33 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    Local,
+    Openai,
+}
+
+impl Default for Backend {
+    fn default() -> Self {
+        Backend::Local
+    }
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::Local => write!(f, "local"),
+            Backend::Openai => write!(f, "openai"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub backend: Backend,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
@@ -20,19 +45,17 @@ impl Config {
         Ok(PathBuf::from(home).join(".config").join("stt-tui"))
     }
 
+    pub fn models_dir() -> Result<PathBuf> {
+        let dir = Self::config_dir()?.join("models");
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
     pub fn config_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("config.toml"))
     }
 
     pub fn load() -> Result<Option<Self>> {
-        // Env var override takes highest priority
-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-            return Ok(Some(Self {
-                api_key: key,
-                model: default_model(),
-            }));
-        }
-
         let path = Self::config_path()?;
         if !path.exists() {
             return Ok(None);
@@ -40,11 +63,12 @@ impl Config {
 
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let config: Config = toml::from_str(&contents)
+        let mut config: Config = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
 
-        if config.api_key.is_empty() {
-            return Ok(None);
+        // Env var override for API key
+        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            config.api_key = key;
         }
 
         Ok(Some(config))
@@ -61,5 +85,10 @@ impl Config {
             .with_context(|| format!("Failed to write {}", path.display()))?;
 
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn needs_api_key(&self) -> bool {
+        self.backend == Backend::Openai && self.api_key.is_empty()
     }
 }

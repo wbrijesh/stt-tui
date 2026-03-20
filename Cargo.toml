@@ -1,6 +1,6 @@
 [package]
 name = "stt-tui"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -17,3 +17,11 @@ toml = "0.8"
 chrono = "0.4"
 futures = "0.3"
 rusqlite = { version = "0.34", features = ["bundled"] }
+tar = "0.4"
+flate2 = "1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+transcribe-rs = { version = "0.3", features = ["whisper-metal", "onnx"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+transcribe-rs = { version = "0.3", features = ["whisper-cpp", "onnx"] }
